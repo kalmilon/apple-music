@@ -50,10 +50,7 @@ Apple Music descriptions don't support line breaks or markdown — everything re
 
 **Apple Music `--description`:** Keep it short — 1-3 sentences. What the playlist is, the vibe, and "Full listening guide in Obsidian."
 
-**Obsidian listening guide:** For every playlist, create a markdown file at:
-```
-/Users/kalmilon/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault/Music/<Playlist Name>.md
-```
+**Obsidian listening guide:** For every playlist, create a markdown file at `$OBSIDIAN_MUSIC_PATH/<Playlist Name>.md`. The path is set in `.env`. If `OBSIDIAN_MUSIC_PATH` is not set, create guides in `./guides/` within this repo instead.
 
 The user knows NOTHING about these songs or artists. Write for someone going in completely blind. No jargon. No music-critic speak. Explain everything like a friend who knows music talking over drinks.
 
