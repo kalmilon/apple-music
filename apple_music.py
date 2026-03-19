@@ -93,3 +93,75 @@ class AppleMusicClient:
         )
         self._check_response(resp)
         return resp.status_code in (200, 201, 204)
+
+    def list_playlists(self) -> list[dict]:
+        """List all library playlists."""
+        playlists = []
+        url = f"{BASE_URL}/v1/me/library/playlists"
+        while url:
+            resp = self.session.get(url)
+            self._check_response(resp)
+            data = resp.json()
+            for p in data["data"]:
+                attrs = p.get("attributes", {})
+                if "name" not in attrs:
+                    continue
+                playlists.append({
+                    "id": p["id"],
+                    "name": attrs["name"],
+                    "description": attrs.get("description", {}).get("standard", ""),
+                })
+            url = data.get("next")
+            if url:
+                url = f"{BASE_URL}{url}"
+        return playlists
+
+    def get_playlist_tracks(self, playlist_id: str) -> list[dict]:
+        """Get all tracks in a library playlist."""
+        tracks = []
+        url = f"{BASE_URL}/v1/me/library/playlists/{playlist_id}/tracks"
+        while url:
+            resp = self.session.get(url)
+            self._check_response(resp)
+            data = resp.json()
+            for t in data.get("data", []):
+                tracks.append({
+                    "id": t["id"],
+                    "type": t["type"],
+                    "name": t["attributes"]["name"],
+                    "artist": t["attributes"]["artistName"],
+                    "album": t["attributes"].get("albumName", ""),
+                })
+            url = data.get("next")
+            if url:
+                url = f"{BASE_URL}{url}"
+        return tracks
+
+    def remove_tracks(self, playlist_id: str, track_ids: list[str]) -> bool:
+        """Remove tracks from a library playlist by library-song ID."""
+        for tid in track_ids:
+            resp = self.session.delete(
+                f"{BASE_URL}/v1/me/library/playlists/{playlist_id}/tracks",
+                params={"ids[library-songs]": tid, "mode": "all"},
+            )
+            self._check_response(resp)
+        return True
+
+    def update_playlist(self, playlist_id: str, name: str | None = None, description: str | None = None) -> bool:
+        """Update playlist name and/or description. Only works on playlists you created (canEdit: true)."""
+        if name is None and description is None:
+            return True
+        # PUT requires both fields — fetch current values for any we're not changing
+        resp = self.session.get(f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
+        self._check_response(resp)
+        current = resp.json()["data"][0]["attributes"]
+        attrs = {
+            "name": name if name is not None else current.get("name", ""),
+            "description": description if description is not None else current.get("description", {}).get("standard", ""),
+        }
+        resp = self.session.put(
+            f"{BASE_URL}/v1/me/library/playlists/{playlist_id}",
+            json={"attributes": attrs},
+        )
+        self._check_response(resp)
+        return resp.status_code == 204
