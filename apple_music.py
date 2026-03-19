@@ -147,6 +147,15 @@ class AppleMusicClient:
             self._check_response(resp)
         return True
 
+    def replace_all_tracks(self, playlist_id: str, track_ids: list[str]) -> bool:
+        """Remove all tracks and re-add in the given order. Used for resequencing."""
+        existing = self.get_playlist_tracks(playlist_id)
+        if existing:
+            self.remove_tracks(playlist_id, [t["id"] for t in existing])
+        if track_ids:
+            self.add_tracks(playlist_id, track_ids)
+        return True
+
     def update_playlist(self, playlist_id: str, name: str | None = None, description: str | None = None) -> bool:
         """Update playlist name and/or description. Only works on playlists you created (canEdit: true)."""
         if name is None and description is None:

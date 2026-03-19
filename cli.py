@@ -146,6 +146,13 @@ def cmd_update(args):
         sys.exit(1)
 
 
+def cmd_rebuild(args):
+    am = get_client()
+    track_ids = json.loads(args.track_ids)
+    am.replace_all_tracks(args.id, track_ids)
+    print(f"Rebuilt playlist with {len(track_ids)} tracks in specified order.")
+
+
 def cmd_search(args):
     am = get_client()
     results = am.search_song(args.query, limit=args.limit)
@@ -186,6 +193,11 @@ def main():
     p_update.add_argument("--add-track-ids", help="JSON array of catalog song IDs to add directly")
     p_update.add_argument("--remove-track-ids", help="JSON array of library-song IDs to remove")
 
+    # rebuild — replace all tracks in a specific order
+    p_rebuild = sub.add_parser("rebuild", help="Replace all tracks in a playlist with a new ordered list")
+    p_rebuild.add_argument("--id", required=True, help="Playlist ID")
+    p_rebuild.add_argument("--track-ids", required=True, help="JSON array of catalog song IDs in desired order")
+
     # search
     p_search = sub.add_parser("search", help="Search Apple Music catalog")
     p_search.add_argument("--query", required=True)
@@ -195,7 +207,7 @@ def main():
 
     try:
         {"create": cmd_create, "list": cmd_list, "tracks": cmd_tracks,
-         "update": cmd_update, "search": cmd_search}[args.command](args)
+         "update": cmd_update, "rebuild": cmd_rebuild, "search": cmd_search}[args.command](args)
     except TokenExpiredError as e:
         print(f"\n{e}", file=sys.stderr)
         sys.exit(1)
