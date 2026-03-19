@@ -62,10 +62,11 @@ def main():
         found = []
         for song in songs:
             query = f"{song['artist']} {song['title']}"
-            result = am.search_song(query)
-            if result:
-                print(f"  found: {result['artist']} - {result['name']}")
-                found.append(result)
+            results = am.search_song(query)
+            if results:
+                pick = results[0]
+                print(f"  found: {pick['artist']} - {pick['name']}")
+                found.append(pick)
             else:
                 print(f"  miss:  {song['artist']} - {song['title']}")
 

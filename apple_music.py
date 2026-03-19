@@ -49,24 +49,29 @@ class AppleMusicClient:
             )
         resp.raise_for_status()
 
-    def search_song(self, query: str) -> dict | None:
-        """Search catalog for a song. Returns first match or None."""
+    def search_song(self, query: str, limit: int = 3) -> list[dict]:
+        """Search catalog for a song. Returns top matches."""
         resp = self.session.get(
             f"{BASE_URL}/v1/catalog/{self.storefront}/search",
-            params={"term": query, "types": "songs", "limit": 1},
+            params={"term": query, "types": "songs", "limit": limit},
         )
         self._check_response(resp)
         data = resp.json()
         songs = data.get("results", {}).get("songs", {}).get("data", [])
-        if not songs:
-            return None
-        song = songs[0]
-        return {
-            "id": song["id"],
-            "name": song["attributes"]["name"],
-            "artist": song["attributes"]["artistName"],
-            "album": song["attributes"].get("albumName", ""),
-        }
+        return [
+            {
+                "id": song["id"],
+                "name": song["attributes"]["name"],
+                "artist": song["attributes"]["artistName"],
+                "album": song["attributes"].get("albumName", ""),
+                "duration_ms": song["attributes"].get("durationInMillis"),
+                "release_date": song["attributes"].get("releaseDate", ""),
+                "genres": song["attributes"].get("genreNames", []),
+                "audio_traits": song["attributes"].get("audioTraits", []),
+                "isrc": song["attributes"].get("isrc", ""),
+            }
+            for song in songs
+        ]
 
     def create_playlist(self, name: str, description: str = "") -> str:
         """Create a new library playlist. Returns playlist ID."""
