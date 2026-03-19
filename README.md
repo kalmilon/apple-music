@@ -86,6 +86,9 @@ uv run python cli.py update --id p.XXXXX --name "New Name" --description "..."
 uv run python cli.py update --id p.XXXXX --add-songs '[{"artist": "...", "title": "..."}]'
 uv run python cli.py update --id p.XXXXX --remove-track-ids '["i.XXXXX"]' --add-track-ids '["1234567"]'
 
+# Rebuild a playlist in a new order (creates new playlist, deletes old)
+uv run python cli.py rebuild --id p.XXXXX --track-ids '["catalog-id-1", "catalog-id-2"]'
+
 # Search Apple Music catalog
 uv run python cli.py search --query "Miles Davis Blue in Green" --limit 5
 ```

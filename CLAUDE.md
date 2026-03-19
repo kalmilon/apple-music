@@ -31,6 +31,12 @@ uv run python cli.py update --id p.XXXXX --remove-track-ids '["i.XXXXX"]'  # lib
 uv run python cli.py update --id p.XXXXX --remove-track-ids '["i.XXX"]' --add-track-ids '["1234567"]'  # swap in one call
 ```
 
+### Rebuild a playlist in a new order
+```bash
+uv run python cli.py rebuild --id p.XXXXX --track-ids '["catalog-id-1", "catalog-id-2", ...]'
+```
+Creates a new playlist with the same name/description, adds tracks in the specified order, deletes the old one. Returns the new playlist ID. Use this when you need to resequence tracks (the API has no insert-at-position).
+
 ### Search Apple Music catalog
 ```bash
 uv run python cli.py search --query "Miles Davis Blue in Green" --limit 5
@@ -79,7 +85,7 @@ Use `---` dividers between tracks. Keep it scannable — someone should be able 
 ## Architecture
 
 - `apple_music.py` — API client. Talks to `amp-api.music.apple.com` (Apple Music web player's internal API). Two tokens: dev token (auto-scraped from Apple's JS bundle) and user token (from `.env`).
-- `cli.py` — CLI with subcommands: create, list, tracks, update, search. Update handles metadata + add + remove in one call.
+- `cli.py` — CLI with subcommands: create, list, tracks, update, rebuild, search. Update handles metadata + add + remove in one call. Rebuild resequences a playlist by creating a new one and deleting the old.
 - `.env` — contains `APPLE_USER_TOKEN` and `APPLE_STOREFRONT`. `APPLE_DEV_TOKEN` is optional (auto-scraped if not set).
 
 ## Token notes
