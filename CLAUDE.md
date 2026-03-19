@@ -49,6 +49,33 @@ uv run python cli.py search --query "Miles Davis Blue in Green" --limit 5
 3. Use `cli.py create` to push the playlist, or `cli.py add` to append to an existing one
 4. If search picks the wrong version (remix, cover, live), use `cli.py search` to find the right one, then `cli.py remove` the wrong track and `cli.py add` the correct one
 
+### Playlist descriptions and listening guides
+
+Apple Music descriptions don't support line breaks or markdown — everything renders as a single text block. So we split it:
+
+**Apple Music `--description`:** Keep it short — 1-3 sentences. What the playlist is, the vibe, and "Full listening guide in Obsidian."
+
+**Obsidian listening guide:** For every playlist, create a markdown file at:
+```
+/Users/kalmilon/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault/Music/<Playlist Name>.md
+```
+
+The user knows NOTHING about these songs or artists. Write for someone going in completely blind. No jargon. No music-critic speak. Explain everything like a friend who knows music talking over drinks.
+
+The listening guide MUST include:
+
+1. **Header** — playlist name as H1, blockquote with playlist ID, track count, duration, "Don't shuffle"
+2. **"What is this?"** — 2-3 sentences. When to listen, what it feels like. Plain language.
+3. **"How does it flow?"** — the arc in non-technical terms (e.g. "starts quiet, gets emotional, ends in silence")
+4. **Track guide** — H3 per track (numbered), every single one. For each track:
+   - **Tagline** — blockquote with emoji, one-line vibe (e.g. `> 🎧 *The one that floats*`)
+   - **The feeling** — 2-3 sentences on what you'll experience. Lead with emotion, not analysis.
+   - **"Wait for:"** — one specific moment to listen for. Be concrete.
+   - **Collapsible context** — use Obsidian callout `> [!info]- The story behind it` (collapsed by default). Inside: who the artist is, why they made this, the social proof (awards, sales, critical reception, who respects them), historical context, anything that makes it hit harder. Break into paragraphs with `>` prefix on each line and `>` for blank lines between paragraphs.
+5. **"Before You Press Play"** — bullet list: don't shuffle, use good speakers, it's okay to feel things, expand the story sections for tracks that grab you.
+
+Use `---` dividers between tracks. Keep it scannable — someone should be able to skim the taglines and "wait for" lines and get value, then go deep on anything that hooks them.
+
 ### Picking the right version
 
 `search_song` returns top 3 results with metadata: album, release date, duration, audio traits (lossless/hi-res), ISRC. Use this to pick the best version:
