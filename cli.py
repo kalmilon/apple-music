@@ -149,8 +149,8 @@ def cmd_update(args):
 def cmd_rebuild(args):
     am = get_client()
     track_ids = json.loads(args.track_ids)
-    am.replace_all_tracks(args.id, track_ids)
-    print(f"Rebuilt playlist with {len(track_ids)} tracks in specified order.")
+    new_id = am.replace_all_tracks(args.id, track_ids)
+    print(f"Rebuilt playlist with {len(track_ids)} tracks. New ID: {new_id}")
 
 
 def cmd_search(args):

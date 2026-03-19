@@ -147,14 +147,33 @@ class AppleMusicClient:
             self._check_response(resp)
         return True
 
-    def replace_all_tracks(self, playlist_id: str, track_ids: list[str]) -> bool:
-        """Remove all tracks and re-add in the given order. Used for resequencing."""
-        existing = self.get_playlist_tracks(playlist_id)
-        if existing:
-            self.remove_tracks(playlist_id, [t["id"] for t in existing])
+    def replace_all_tracks(self, playlist_id: str, track_ids: list[str]) -> str:
+        """Rebuild a playlist with tracks in a new order.
+
+        Creates a new playlist with the same name/description, adds tracks in order,
+        then deletes the old playlist. Returns the new playlist ID.
+
+        The old remove-all approach destroyed playlists — this is safe.
+        """
+        # Get current metadata
+        resp = self.session.get(f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
+        self._check_response(resp)
+        current = resp.json()["data"][0]["attributes"]
+        name = current.get("name", "")
+        description = current.get("description", {}).get("standard", "")
+
+        # Create new playlist with same metadata
+        new_id = self.create_playlist(name, description)
+
+        # Add tracks in the desired order
         if track_ids:
-            self.add_tracks(playlist_id, track_ids)
-        return True
+            self.add_tracks(new_id, track_ids)
+
+        # Delete old playlist
+        resp = self.session.delete(f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
+        self._check_response(resp)
+
+        return new_id
 
     def update_playlist(self, playlist_id: str, name: str | None = None, description: str | None = None) -> bool:
         """Update playlist name and/or description. Only works on playlists you created (canEdit: true)."""
