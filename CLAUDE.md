@@ -9,6 +9,7 @@ All commands run with `uv run python cli.py <command>`.
 ### Create a playlist
 ```bash
 uv run python cli.py create --name "Playlist Name" --description "description" --songs '[{"artist": "Miles Davis", "title": "Blue in Green"}]'
+uv run python cli.py create --name "Playlist Name" --songs '[...]' --upsert  # adds to existing if name matches
 ```
 
 ### List playlists
@@ -21,21 +22,14 @@ uv run python cli.py list
 uv run python cli.py tracks --id p.XXXXX
 ```
 
-### Update playlist metadata
+### Update a playlist (metadata, add, remove — all in one)
 ```bash
-uv run python cli.py update --id p.XXXXX --name "New Name" --description "New description"
+uv run python cli.py update --id p.XXXXX --name "New Name" --description "New desc"
+uv run python cli.py update --id p.XXXXX --add-songs '[{"artist": "Artist", "title": "Song"}]'
+uv run python cli.py update --id p.XXXXX --add-track-ids '["1234567"]'  # catalog IDs directly
+uv run python cli.py update --id p.XXXXX --remove-track-ids '["i.XXXXX"]'  # library-song IDs from `tracks`
+uv run python cli.py update --id p.XXXXX --remove-track-ids '["i.XXX"]' --add-track-ids '["1234567"]'  # swap in one call
 ```
-
-### Add songs to an existing playlist
-```bash
-uv run python cli.py add --id p.XXXXX --songs '[{"artist": "Artist", "title": "Song"}]'
-```
-
-### Remove tracks from a playlist
-```bash
-uv run python cli.py remove --id p.XXXXX --track-ids '["i.XXXXX"]'
-```
-Note: track IDs for removal are library-song IDs (start with `i.`), not catalog IDs. Get them from `cli.py tracks`.
 
 ### Search Apple Music catalog
 ```bash
@@ -46,8 +40,9 @@ uv run python cli.py search --query "Miles Davis Blue in Green" --limit 5
 
 1. User asks for music (a vibe, mood, genre, activity, etc.)
 2. You recommend songs as a list of `{artist, title}` objects
-3. Use `cli.py create` to push the playlist, or `cli.py add` to append to an existing one
-4. If search picks the wrong version (remix, cover, live), use `cli.py search` to find the right one, then `cli.py remove` the wrong track and `cli.py add` the correct one
+3. Use `cli.py create` to push the playlist
+4. If search picks the wrong version (remix, cover, live), use `cli.py search` to find the right one, then `cli.py update --id ... --remove-track-ids ... --add-track-ids ...` in one call
+5. **MANDATORY: Create the Obsidian listening guide.** Every playlist MUST have a corresponding markdown file. No exceptions. The playlist is not done until the listening guide exists.
 
 ### Playlist descriptions and listening guides
 
@@ -87,7 +82,7 @@ Use `---` dividers between tracks. Keep it scannable — someone should be able 
 ## Architecture
 
 - `apple_music.py` — API client. Talks to `amp-api.music.apple.com` (Apple Music web player's internal API). Two tokens: dev token (auto-scraped from Apple's JS bundle) and user token (from `.env`).
-- `cli.py` — CLI with subcommands: create, list, tracks, update, add, remove, search.
+- `cli.py` — CLI with subcommands: create, list, tracks, update, search. Update handles metadata + add + remove in one call.
 - `.env` — contains `APPLE_USER_TOKEN` and `APPLE_STOREFRONT`. `APPLE_DEV_TOKEN` is optional (auto-scraped if not set).
 
 ## Token notes
