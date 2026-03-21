@@ -72,8 +72,14 @@ Claude Code knows how to use all the CLI commands. Just ask for music.
 ### CLI commands
 
 ```bash
-# Create a playlist
-uv run python cli.py create --name "Chill Jazz" --songs '[{"artist": "Miles Davis", "title": "Blue in Green"}]'
+# Match songs on Apple Music (batch search with scoring)
+uv run python cli.py match --songs '[{"artist": "Miles Davis", "title": "Blue in Green"}]'
+
+# Search for a specific song
+uv run python cli.py search --query "Miles Davis Blue in Green" --limit 5
+
+# Create a playlist from matched track IDs
+uv run python cli.py create --name "Chill Jazz" --track-ids '["123456", "789012"]'
 
 # List your playlists
 uv run python cli.py list
@@ -81,16 +87,17 @@ uv run python cli.py list
 # View tracks in a playlist
 uv run python cli.py tracks --id p.XXXXX
 
-# Update a playlist (metadata, add/remove tracks — all in one)
-uv run python cli.py update --id p.XXXXX --name "New Name" --description "..."
-uv run python cli.py update --id p.XXXXX --add-songs '[{"artist": "...", "title": "..."}]'
-uv run python cli.py update --id p.XXXXX --remove-track-ids '["i.XXXXX"]' --add-track-ids '["1234567"]'
+# Add songs to a playlist
+uv run python cli.py add --id p.XXXXX --track-ids '["123456"]'
 
-# Rebuild a playlist in a new order (creates new playlist, deletes old)
-uv run python cli.py rebuild --id p.XXXXX --track-ids '["catalog-id-1", "catalog-id-2"]'
+# Remove songs from a playlist
+uv run python cli.py remove --id p.XXXXX --track-ids '["i.XXXXX"]'
 
-# Search Apple Music catalog
-uv run python cli.py search --query "Miles Davis Blue in Green" --limit 5
+# Rename or redescribe a playlist
+uv run python cli.py rename --id p.XXXXX --name "New Name" --description "..."
+
+# Reorder a playlist (creates new playlist in order, deletes old)
+uv run python cli.py reorder --id p.XXXXX --track-ids '["catalog-id-1", "catalog-id-2"]'
 ```
 
 ## Security
@@ -109,9 +116,9 @@ uv run python cli.py search --query "Miles Davis Blue in Green" --limit 5
 
 ## How it works
 
-1. Songs are searched against the Apple Music catalog via the web player API
-2. Matched tracks are collected by catalog ID
-3. A new playlist is created in your library
-4. Tracks are added to the playlist
+1. `match` searches each song against Apple Music's catalog, scores candidates (penalizing remixes, DJ mixes, wrong artists), and returns the best catalog IDs with warnings for anything suspicious
+2. You review the output — fix any flagged tracks with `search`
+3. `create` builds the playlist from the final list of catalog IDs
+4. `add`, `remove`, `rename`, `reorder` for ongoing management
 
 See [technical-primer.md](technical-primer.md) for full details on the reverse-engineered API.
