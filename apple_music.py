@@ -49,6 +49,53 @@ class AppleMusicClient:
             )
         resp.raise_for_status()
 
+    def get_song(self, song_id: str) -> dict:
+        """Get a song by catalog ID."""
+        resp = self.session.get(
+            f"{BASE_URL}/v1/catalog/{self.storefront}/songs/{song_id}",
+        )
+        self._check_response(resp)
+        song = resp.json()["data"][0]
+        attrs = song["attributes"]
+        return {
+            "id": song["id"],
+            "name": attrs["name"],
+            "artist": attrs["artistName"],
+            "album": attrs.get("albumName", ""),
+            "album_artist": attrs.get("artistName", ""),
+            "duration_ms": attrs.get("durationInMillis"),
+            "release_date": attrs.get("releaseDate", ""),
+            "genres": attrs.get("genreNames", []),
+            "audio_traits": attrs.get("audioTraits", []),
+            "isrc": attrs.get("isrc", ""),
+            "track_number": attrs.get("trackNumber"),
+            "track_count": attrs.get("trackCount"),
+            "disc_number": attrs.get("discNumber"),
+            "composer": attrs.get("composerName", ""),
+            "copyright": attrs.get("copyright", ""),
+            "artwork_url": attrs.get("artwork", {}).get("url", ""),
+        }
+
+    def get_album_songs(self, album_id: str) -> list[dict]:
+        """Get all songs in an album by catalog ID."""
+        resp = self.session.get(
+            f"{BASE_URL}/v1/catalog/{self.storefront}/albums/{album_id}",
+            params={"include": "tracks"},
+        )
+        self._check_response(resp)
+        tracks = resp.json()["data"][0].get("relationships", {}).get("tracks", {}).get("data", [])
+        return [
+            {
+                "id": t["id"],
+                "name": t["attributes"]["name"],
+                "artist": t["attributes"]["artistName"],
+                "album": t["attributes"].get("albumName", ""),
+                "track_number": t["attributes"].get("trackNumber"),
+                "disc_number": t["attributes"].get("discNumber"),
+            }
+            for t in tracks
+        ]
+
     def search_song(self, query: str, limit: int = 3) -> list[dict]:
         """Search catalog for a song. Returns top matches."""
         resp = self.session.get(
