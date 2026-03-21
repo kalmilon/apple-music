@@ -351,9 +351,10 @@ Cover art is downloaded from Apple's artwork CDN with `{w}` and `{h}` template v
 
 ## Security considerations
 
-- **Public wrapper-manager trust**: When using `wm.wol.moe`, the operator can see what you download. For login, your Apple ID credentials pass through their server. Self-hosting eliminates this.
+- **No credentials sent to wrapper-manager**: Our client only sends song IDs and encrypted audio samples to the wrapper-manager. The wrapper-manager uses its own Apple Music accounts for authentication. Our `APPLE_USER_TOKEN` only talks to Apple's API directly for metadata/playlist lookups — it never touches the wrapper-manager.
+- **Wrapper-manager visibility**: The operator can see which songs you're decrypting (adam_ids). That's it — no account info, no personal data.
 - **DRM circumvention**: This is FairPlay DRM circumvention, which implicates the DMCA (US) and equivalent laws in other jurisdictions, regardless of whether you have an active subscription.
-- **Token exposure**: The `APPLE_USER_TOKEN` in `.env` grants full access to your Apple Music library. Treat it like a password.
+- **Token exposure**: The `APPLE_USER_TOKEN` in `.env` grants full access to your Apple Music library. Treat it like a password — but it only goes to Apple's servers, never to third parties.
 
 ## Prior art
 
