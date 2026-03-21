@@ -12,6 +12,8 @@ Usage:
     python cli.py remove --id p.ABC123 --track-ids '["i.XXX", "i.YYY"]'
     python cli.py rename --id p.ABC123 --name "New Name" --description "New desc"
     python cli.py reorder --id p.ABC123 --track-ids '["123", "456", "789"]'
+    python cli.py download --url "https://music.apple.com/us/song/..."
+    python cli.py download --url "https://music.apple.com/us/album/..."
 """
 
 import argparse
@@ -273,6 +275,60 @@ def cmd_reorder(args):
     print(f"Reordered playlist. New ID: {new_id}")
 
 
+def cmd_download(args):
+    from downloader import (
+        WrapperManagerClient, check_tools, download_song,
+        parse_apple_music_url,
+    )
+
+    # Check external tools
+    missing = check_tools()
+    if missing:
+        print(f"Missing tools: {', '.join(missing)}")
+        print("Install with: brew install ffmpeg gpac bento4")
+        sys.exit(1)
+
+    am = get_client()
+    wrapper_url = os.environ.get("WRAPPER_MANAGER_URL", "wm.wol.moe")
+    wrapper_secure = os.environ.get("WRAPPER_MANAGER_SECURE", "true").lower() == "true"
+
+    wm = WrapperManagerClient(wrapper_url, secure=wrapper_secure)
+
+    try:
+        # Check wrapper-manager status
+        status = wm.status()
+        if not status["ready"]:
+            print("Wrapper-manager is not ready. Try again later.")
+            sys.exit(1)
+        print(f"Connected to wrapper-manager ({len(status['regions'])} regions, {status['clients']} clients)")
+
+        # Resolve what to download
+        if args.url:
+            content_type, content_id = parse_apple_music_url(args.url)
+        elif args.song_id:
+            content_type, content_id = "song", args.song_id
+        else:
+            print("Provide --url or --song-id")
+            sys.exit(1)
+
+        output_dir = args.output or os.environ.get("DOWNLOAD_DIR", "./downloads")
+        codec = args.codec or "alac"
+
+        if content_type == "song":
+            download_song(content_id, wm, am, output_dir, codec)
+        elif content_type == "album":
+            songs = am.get_album_songs(content_id)
+            print(f"Album has {len(songs)} tracks")
+            for i, song in enumerate(songs):
+                print(f"\n[{i + 1}/{len(songs)}] {song['artist']} - {song['name']}")
+                try:
+                    download_song(song["id"], wm, am, output_dir, codec)
+                except Exception as e:
+                    print(f"  FAILED: {e}")
+    finally:
+        wm.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Apple Music playlist CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -321,6 +377,14 @@ def main():
     p_reorder.add_argument("--id", required=True, help="Playlist ID")
     p_reorder.add_argument("--track-ids", required=True, help="JSON array of catalog song IDs in desired order")
 
+    # download
+    p_download = sub.add_parser("download", help="Download songs from Apple Music")
+    p_download.add_argument("--url", help="Apple Music song or album URL")
+    p_download.add_argument("--song-id", help="Apple Music catalog song ID")
+    p_download.add_argument("--output", help="Output directory (default: ./downloads)")
+    p_download.add_argument("--codec", choices=["alac", "aac"], default="alac",
+                            help="Audio codec (default: alac)")
+
     args = parser.parse_args()
 
     try:
@@ -328,6 +392,7 @@ def main():
             "match": cmd_match, "search": cmd_search, "create": cmd_create,
             "list": cmd_list, "tracks": cmd_tracks, "add": cmd_add,
             "remove": cmd_remove, "rename": cmd_rename, "reorder": cmd_reorder,
+            "download": cmd_download,
         }[args.command](args)
     except TokenExpiredError as e:
         print(f"\n{e}", file=sys.stderr)
