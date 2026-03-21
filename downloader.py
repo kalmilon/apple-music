@@ -18,11 +18,13 @@ from mutagen.mp4 import MP4, MP4Cover
 from proto import manager_pb2, manager_pb2_grpc
 
 PREFETCH_KEY = "skd://itunes.apple.com/P000000000/s1/e1"
-CODEC_KEY_SUFFIX = {"alac": "c23", "aac": "c22", "ec3": "c24", "ac3": "c24"}
+CODEC_KEY_SUFFIX = {"alac": "c23", "aac": "c22", "ec3": "c24", "ac3": "c24", "atmos": "c24"}
 CODEC_REGEX = {
     "alac": r"audio-alac-stereo-\d{5,6}-\d{2}$",
     "aac": r"audio-stereo-\d{3}$",
+    "atmos": r"audio-(atmos|ec3)-\d{4}$",
 }
+MAX_RETRIES = 3
 REQUIRED_TOOLS = ["ffmpeg", "gpac", "MP4Box", "mp4edit", "mp4extract"]
 
 
@@ -81,11 +83,11 @@ class WrapperManagerClient:
             raise RuntimeError(f"M3U8 error: {resp.header.msg}")
         return resp.data.m3u8
 
-    def decrypt_samples(
-        self, adam_id: str, keys: list[str], samples: list[SampleInfo]
-    ) -> list[bytes]:
-        """Decrypt all samples via bidirectional gRPC stream."""
-        results: list[bytes | None] = [None] * len(samples)
+    def _decrypt_batch(
+        self, adam_id: str, keys: list[str], samples: list[tuple[int, SampleInfo]]
+    ) -> dict[int, bytes]:
+        """Send a batch of (index, sample) pairs for decryption. Returns {index: decrypted_bytes}."""
+        results: dict[int, bytes] = {}
         req_queue: queue.Queue = queue.Queue()
         errors: list[str] = []
 
@@ -114,7 +116,7 @@ class WrapperManagerClient:
         reader = threading.Thread(target=read_responses, args=(resp_iter,))
         reader.start()
 
-        for i, sample in enumerate(samples):
+        for i, sample in samples:
             key_idx = min(sample.desc_index, len(keys) - 1)
             req = manager_pb2.DecryptRequest(
                 data=manager_pb2.DecryptData(
@@ -125,18 +127,42 @@ class WrapperManagerClient:
                 )
             )
             req_queue.put(req)
-            if (i + 1) % 200 == 0:
-                print(f"    sent {i + 1}/{len(samples)} samples...")
 
         req_queue.put(None)
         reader.join()
-
-        if errors:
-            raise RuntimeError(f"Decryption errors: {'; '.join(errors)}")
-        missing = [i for i, r in enumerate(results) if r is None]
-        if missing:
-            raise RuntimeError(f"Missing decrypted samples: {missing[:10]}...")
         return results
+
+    def decrypt_samples(
+        self, adam_id: str, keys: list[str], samples: list[SampleInfo]
+    ) -> list[bytes]:
+        """Decrypt all samples via bidirectional gRPC stream with retries."""
+        all_results: dict[int, bytes] = {}
+        pending = list(enumerate(samples))
+
+        for attempt in range(MAX_RETRIES):
+            if not pending:
+                break
+            if attempt > 0:
+                print(f"    retry {attempt}/{MAX_RETRIES - 1} for {len(pending)} samples...")
+
+            batch_results = self._decrypt_batch(
+                adam_id, keys, [(i, s) for i, s in pending]
+            )
+            all_results.update(batch_results)
+
+            # Find what's still missing
+            pending = [(i, s) for i, s in pending if i not in batch_results]
+
+            if (attempt == 0) and not pending:
+                break  # all good on first try
+
+        if pending:
+            missing_indices = [i for i, _ in pending]
+            raise RuntimeError(
+                f"Failed to decrypt {len(pending)} samples after {MAX_RETRIES} attempts: {missing_indices[:10]}..."
+            )
+
+        return [all_results[i] for i in range(len(samples))]
 
     def close(self):
         self.channel.close()
@@ -342,35 +368,39 @@ def reassemble(
         for sample in decrypted_samples:
             f.write(sample)
 
-    # Rewrite NHML: update baseMediaFile and change enca → actual codec
-    nhml_root = ElementTree.fromstring(song_info.nhml)
-    nhml_root.set("baseMediaFile", "dec.media")
-    if codec == "alac":
-        nhml_root.set("mediaSubType", "alac")
-    elif codec == "aac":
-        nhml_root.set("mediaSubType", "mp4a")
-
-    nhml_path = os.path.join(tmpdir, "dec.nhml")
-    ElementTree.ElementTree(nhml_root).write(
-        nhml_path, xml_declaration=True, encoding="utf-8"
-    )
-
-    # Re-mux with gpac
     raw_m4a = os.path.join(tmpdir, "dec.m4a")
-    _run(["gpac", "-i", nhml_path, "nhmlr", "-o", raw_m4a])
 
-    # Insert ALAC decoder params
-    if codec == "alac" and song_info.decoder_params:
-        atom_path = os.path.join(tmpdir, "alac.atom")
-        with open(atom_path, "wb") as f:
-            f.write(song_info.decoder_params)
-        fixed_m4a = os.path.join(tmpdir, "dec_fixed.m4a")
-        _run([
-            "mp4edit", "--insert",
-            f"moov/trak/mdia/minf/stbl/stsd/alac:{atom_path}",
-            raw_m4a, fixed_m4a,
-        ])
-        os.rename(fixed_m4a, raw_m4a)
+    if codec == "atmos":
+        # Atmos (EC-3): simple remux, no NHML round-trip
+        _run(["gpac", "-i", media_path, "-o", raw_m4a])
+    else:
+        # ALAC/AAC: NHML-based reassembly
+        nhml_root = ElementTree.fromstring(song_info.nhml)
+        nhml_root.set("baseMediaFile", "dec.media")
+        if codec == "alac":
+            nhml_root.set("mediaSubType", "alac")
+        elif codec == "aac":
+            nhml_root.set("mediaSubType", "mp4a")
+
+        nhml_path = os.path.join(tmpdir, "dec.nhml")
+        ElementTree.ElementTree(nhml_root).write(
+            nhml_path, xml_declaration=True, encoding="utf-8"
+        )
+
+        _run(["gpac", "-i", nhml_path, "nhmlr", "-o", raw_m4a])
+
+        # Insert ALAC decoder params
+        if codec == "alac" and song_info.decoder_params:
+            atom_path = os.path.join(tmpdir, "alac.atom")
+            with open(atom_path, "wb") as f:
+                f.write(song_info.decoder_params)
+            fixed_m4a = os.path.join(tmpdir, "dec_fixed.m4a")
+            _run([
+                "mp4edit", "--insert",
+                f"moov/trak/mdia/minf/stbl/stsd/alac:{atom_path}",
+                raw_m4a, fixed_m4a,
+            ])
+            os.rename(fixed_m4a, raw_m4a)
 
     # Set M4A brand
     _run(["MP4Box", "-brand", "M4A ", "-ab", "M4A ", "-ab", "mp42", raw_m4a])
@@ -388,6 +418,18 @@ def reassemble(
     # Move to output
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     shutil.move(final_m4a, output_path)
+
+
+def check_integrity(path: str) -> bool:
+    """Verify a .m4a file plays without errors."""
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", path,
+         "-c:a", "pcm_s16le", "-f", "null", "/dev/null"],
+        capture_output=True,
+    )
+    if r.returncode != 0 or r.stderr:
+        return False
+    return True
 
 
 def tag_file(path: str, metadata: dict, cover_data: bytes | None = None):
@@ -508,6 +550,13 @@ def download_song(
                 pass
 
         tag_file(output_path, metadata, cover_data)
+
+        # 9. Integrity check
+        print("Verifying...")
+        if not check_integrity(output_path):
+            print(f"  WARNING: integrity check failed for {output_path}")
+        else:
+            print(f"  ✓ verified")
 
     print(f"  ✓ {output_path}")
     return output_path

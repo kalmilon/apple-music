@@ -307,8 +307,10 @@ def cmd_download(args):
             content_type, content_id = parse_apple_music_url(args.url)
         elif args.song_id:
             content_type, content_id = "song", args.song_id
+        elif args.playlist_id:
+            content_type, content_id = "playlist", args.playlist_id
         else:
-            print("Provide --url or --song-id")
+            print("Provide --url, --song-id, or --playlist-id")
             sys.exit(1)
 
         output_dir = args.output or os.environ.get("DOWNLOAD_DIR", "./downloads")
@@ -323,6 +325,24 @@ def cmd_download(args):
                 print(f"\n[{i + 1}/{len(songs)}] {song['artist']} - {song['name']}")
                 try:
                     download_song(song["id"], wm, am, output_dir, codec)
+                except Exception as e:
+                    print(f"  FAILED: {e}")
+        elif content_type == "playlist":
+            tracks = am.get_playlist_tracks(content_id)
+            print(f"Playlist has {len(tracks)} tracks")
+            for i, track in enumerate(tracks):
+                print(f"\n[{i + 1}/{len(tracks)}] {track['artist']} - {track['name']}")
+                # Library tracks have catalog ID in relationships; fall back to search
+                catalog_id = track.get("catalog_id")
+                if not catalog_id:
+                    results = am.search_song(f"{track['artist']} {track['name']}", limit=1)
+                    if results:
+                        catalog_id = results[0]["id"]
+                    else:
+                        print(f"  SKIPPED: could not find on catalog")
+                        continue
+                try:
+                    download_song(catalog_id, wm, am, output_dir, codec)
                 except Exception as e:
                     print(f"  FAILED: {e}")
     finally:
@@ -381,8 +401,9 @@ def main():
     p_download = sub.add_parser("download", help="Download songs from Apple Music")
     p_download.add_argument("--url", help="Apple Music song or album URL")
     p_download.add_argument("--song-id", help="Apple Music catalog song ID")
+    p_download.add_argument("--playlist-id", help="Library playlist ID (from 'list' command)")
     p_download.add_argument("--output", help="Output directory (default: ./downloads)")
-    p_download.add_argument("--codec", choices=["alac", "aac"], default="alac",
+    p_download.add_argument("--codec", choices=["alac", "aac", "atmos"], default="alac",
                             help="Audio codec (default: alac)")
 
     args = parser.parse_args()
