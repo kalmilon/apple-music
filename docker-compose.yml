@@ -1,0 +1,15 @@
+services:
+  wrapper:
+    build: .
+    container_name: apple-music-wrapper
+    privileged: true
+    ports:
+      - "10020:10020"
+      - "20020:20020"
+      - "30020:30020"
+    volumes:
+      - wrapper-data:/app/rootfs/data
+    command: ["-H", "0.0.0.0"]
+
+volumes:
+  wrapper-data:
