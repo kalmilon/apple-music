@@ -5,17 +5,12 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
-import queue
 from dataclasses import dataclass, field
 from xml.etree import ElementTree
 
-import grpc
 import httpx
 import m3u8
 from mutagen.mp4 import MP4, MP4Cover
-
-from proto import manager_pb2, manager_pb2_grpc
 
 import socket
 import struct
@@ -170,118 +165,6 @@ class SongInfo:
     decoder_params: bytes | None
     params: dict = field(default_factory=dict)
 
-
-class WrapperManagerClient:
-    """gRPC client for the wrapper-manager decryption service."""
-
-    def __init__(self, url: str, secure: bool = True):
-        if secure:
-            self.channel = grpc.secure_channel(url, grpc.ssl_channel_credentials())
-        else:
-            self.channel = grpc.insecure_channel(url)
-        self.stub = manager_pb2_grpc.WrapperManagerServiceStub(self.channel)
-
-    def status(self) -> dict:
-        from google.protobuf.empty_pb2 import Empty
-        resp = self.stub.Status(Empty())
-        return {
-            "ready": resp.data.ready,
-            "regions": list(resp.data.regions),
-            "clients": resp.data.client_count,
-        }
-
-    def get_m3u8(self, adam_id: str) -> str:
-        req = manager_pb2.M3U8Request(
-            data=manager_pb2.M3U8DataRequest(adam_id=adam_id)
-        )
-        resp = self.stub.M3U8(req)
-        if resp.header.code != 0:
-            raise RuntimeError(f"M3U8 error: {resp.header.msg}")
-        return resp.data.m3u8
-
-    def _decrypt_batch(
-        self, adam_id: str, keys: list[str], samples: list[tuple[int, SampleInfo]]
-    ) -> dict[int, bytes]:
-        """Send a batch of (index, sample) pairs for decryption. Returns {index: decrypted_bytes}."""
-        results: dict[int, bytes] = {}
-        req_queue: queue.Queue = queue.Queue()
-        errors: list[str] = []
-
-        def request_gen():
-            while True:
-                item = req_queue.get()
-                if item is None:
-                    return
-                yield item
-
-        def read_responses(resp_iter):
-            try:
-                for resp in resp_iter:
-                    if resp.data.adam_id == "KEEPALIVE":
-                        continue
-                    if resp.header.code != 0:
-                        errors.append(
-                            f"Sample {resp.data.sample_index}: {resp.header.msg}"
-                        )
-                        continue
-                    results[resp.data.sample_index] = resp.data.sample
-            except grpc.RpcError as e:
-                errors.append(str(e))
-
-        resp_iter = self.stub.Decrypt(request_gen())
-        reader = threading.Thread(target=read_responses, args=(resp_iter,))
-        reader.start()
-
-        for i, sample in samples:
-            key_idx = min(sample.desc_index, len(keys) - 1)
-            req = manager_pb2.DecryptRequest(
-                data=manager_pb2.DecryptData(
-                    adam_id=adam_id,
-                    key=keys[key_idx],
-                    sample_index=i,
-                    sample=sample.data,
-                )
-            )
-            req_queue.put(req)
-
-        req_queue.put(None)
-        reader.join()
-        return results
-
-    def decrypt_samples(
-        self, adam_id: str, keys: list[str], samples: list[SampleInfo]
-    ) -> list[bytes]:
-        """Decrypt all samples via bidirectional gRPC stream with retries."""
-        all_results: dict[int, bytes] = {}
-        pending = list(enumerate(samples))
-
-        for attempt in range(MAX_RETRIES):
-            if not pending:
-                break
-            if attempt > 0:
-                print(f"    retry {attempt}/{MAX_RETRIES - 1} for {len(pending)} samples...")
-
-            batch_results = self._decrypt_batch(
-                adam_id, keys, [(i, s) for i, s in pending]
-            )
-            all_results.update(batch_results)
-
-            # Find what's still missing
-            pending = [(i, s) for i, s in pending if i not in batch_results]
-
-            if (attempt == 0) and not pending:
-                break  # all good on first try
-
-        if pending:
-            missing_indices = [i for i, _ in pending]
-            raise RuntimeError(
-                f"Failed to decrypt {len(pending)} samples after {MAX_RETRIES} attempts: {missing_indices[:10]}..."
-            )
-
-        return [all_results[i] for i in range(len(samples))]
-
-    def close(self):
-        self.channel.close()
 
 
 def parse_m3u8(m3u8_content: str, codec: str = "alac") -> M3U8Info:
@@ -596,7 +479,7 @@ def parse_apple_music_url(url: str) -> tuple[str, str]:
 
 def download_song(
     adam_id: str,
-    wm: WrapperManagerClient,
+    wm: WrapperClient,
     am,
     output_dir: str = "./downloads",
     codec: str = "alac",

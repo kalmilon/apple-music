@@ -277,7 +277,7 @@ def cmd_reorder(args):
 
 def cmd_download(args):
     from downloader import (
-        WrapperManagerClient, check_tools, download_song,
+        WrapperClient, check_tools, download_song,
         parse_apple_music_url,
     )
 
@@ -289,18 +289,10 @@ def cmd_download(args):
         sys.exit(1)
 
     am = get_client()
-    wrapper_url = os.environ.get("WRAPPER_MANAGER_URL", "wm.wol.moe")
-    wrapper_secure = os.environ.get("WRAPPER_MANAGER_SECURE", "true").lower() == "true"
-
-    wm = WrapperManagerClient(wrapper_url, secure=wrapper_secure)
+    wrapper_host = os.environ.get("WRAPPER_HOST", "localhost")
+    wm = WrapperClient(host=wrapper_host)
 
     try:
-        # Check wrapper-manager status
-        status = wm.status()
-        if not status["ready"]:
-            print("Wrapper-manager is not ready. Try again later.")
-            sys.exit(1)
-        print(f"Connected to wrapper-manager ({len(status['regions'])} regions, {status['clients']} clients)")
 
         # Resolve what to download
         if args.url:
