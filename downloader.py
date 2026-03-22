@@ -67,6 +67,88 @@ def readfull(stream, n: int) -> bytes:
     return buf
 
 
+class WrapperClient:
+    """Direct TCP client for the wrapper binary. No gRPC, no middleware."""
+
+    def __init__(self, host: str = "localhost", decrypt_port: int = 10020,
+                 m3u8_port: int = 20020, login_port: int = 30020):
+        self.host = host
+        self.decrypt_port = decrypt_port
+        self.m3u8_port = m3u8_port
+        self.login_port = login_port
+
+    def _connect(self, port: int) -> socket.socket:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(30)
+        sock.connect((self.host, port))
+        return sock
+
+    def get_m3u8(self, adam_id: str) -> str:
+        """Get M3U8 URL for a song via port 20020."""
+        sock = self._connect(self.m3u8_port)
+        try:
+            adam_bytes = adam_id.encode("ascii")
+            sock.sendall(struct.pack(">I", len(adam_bytes)) + adam_bytes)
+            # Read response: uint32 length + URL string
+            length_data = readfull(sock, 4)
+            length = struct.unpack(">I", length_data)[0]
+            url_data = readfull(sock, length)
+            return url_data.decode("utf-8")
+        finally:
+            sock.close()
+
+    def decrypt_samples(
+        self, adam_id: str, keys: list[str], samples: list
+    ) -> list[bytes]:
+        """Decrypt samples via port 10020. One TCP connection per key group."""
+        # Group samples by their key (desc_index)
+        key_groups: dict[str, list[tuple[int, bytes]]] = {}
+        for i, sample in enumerate(samples):
+            key_idx = min(sample.desc_index, len(keys) - 1)
+            key = keys[key_idx]
+            if key not in key_groups:
+                key_groups[key] = []
+            key_groups[key].append((i, sample.data))
+
+        results: dict[int, bytes] = {}
+
+        for key_uri, group in key_groups.items():
+            for attempt in range(MAX_RETRIES):
+                try:
+                    sock = self._connect(self.decrypt_port)
+                    try:
+                        # Send setup
+                        sock.sendall(pack_decrypt_setup(adam_id, key_uri))
+
+                        # Send samples and read responses
+                        pending = [(i, data) for i, data in group if i not in results]
+                        for idx, sample_data in pending:
+                            sock.sendall(pack_sample(sample_data))
+                            decrypted = readfull(sock, len(sample_data))
+                            results[idx] = decrypted
+
+                        # Terminate
+                        sock.sendall(pack_sample(b""))
+                    finally:
+                        sock.close()
+                    break  # success, no retry needed
+                except (OSError, RuntimeError) as e:
+                    if attempt == MAX_RETRIES - 1:
+                        raise RuntimeError(
+                            f"Decrypt failed after {MAX_RETRIES} attempts: {e}"
+                        )
+                    print(f"    retry {attempt + 1}/{MAX_RETRIES}...")
+
+        if len(results) != len(samples):
+            missing = [i for i in range(len(samples)) if i not in results]
+            raise RuntimeError(f"Missing decrypted samples: {missing[:10]}...")
+
+        return [results[i] for i in range(len(samples))]
+
+    def close(self):
+        pass  # no persistent connection to close
+
+
 @dataclass
 class M3U8Info:
     uri: str
