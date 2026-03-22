@@ -17,6 +17,9 @@ from mutagen.mp4 import MP4, MP4Cover
 
 from proto import manager_pb2, manager_pb2_grpc
 
+import socket
+import struct
+
 PREFETCH_KEY = "skd://itunes.apple.com/P000000000/s1/e1"
 CODEC_KEY_SUFFIX = {"alac": "c23", "aac": "c22", "ec3": "c24", "ac3": "c24", "atmos": "c24"}
 CODEC_REGEX = {
@@ -31,6 +34,37 @@ REQUIRED_TOOLS = ["ffmpeg", "gpac", "MP4Box", "mp4edit", "mp4extract"]
 def check_tools() -> list[str]:
     """Return list of missing external tools."""
     return [t for t in REQUIRED_TOOLS if not shutil.which(t)]
+
+
+# --- TCP wrapper protocol ---
+
+def pack_decrypt_setup(adam_id: str, uri: str) -> bytes:
+    """Pack the decrypt setup message: uint8 adam_len + adam + uint8 uri_len + uri."""
+    adam_bytes = adam_id.encode("ascii")
+    uri_bytes = uri.encode("ascii")
+    return (
+        struct.pack("B", len(adam_bytes)) + adam_bytes
+        + struct.pack("B", len(uri_bytes)) + uri_bytes
+    )
+
+
+def pack_sample(sample: bytes) -> bytes:
+    """Pack a sample: uint32 big-endian size + raw bytes. Empty = terminator."""
+    return struct.pack(">I", len(sample)) + sample
+
+
+def readfull(stream, n: int) -> bytes:
+    """Read exactly n bytes from a file-like object or socket."""
+    buf = b""
+    while len(buf) < n:
+        if hasattr(stream, "recv"):
+            chunk = stream.recv(n - len(buf))
+        else:
+            chunk = stream.read(n - len(buf))
+        if not chunk:
+            raise RuntimeError(f"Short read: got {len(buf)} bytes, expected {n}")
+        buf += chunk
+    return buf
 
 
 @dataclass

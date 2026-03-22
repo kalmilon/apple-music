@@ -1,5 +1,7 @@
-"""Tests for CLI scoring and matching logic."""
+"""Tests for CLI scoring, matching logic, and TCP wrapper protocol."""
 
+import io
+import struct
 import pytest
 
 from cli import score_result, match_songs
@@ -248,3 +250,62 @@ class TestMatchSongs:
         assert len(results) == 2
         assert results[0]["pick"]["name"] == "Mamma Mia"
         assert results[1]["pick"]["name"] == "Don't Stop Me Now"
+
+
+# --- TCP wrapper protocol tests ---
+
+from downloader import pack_decrypt_setup, pack_sample, readfull
+
+
+class TestTCPProtocol:
+    def test_pack_decrypt_setup(self):
+        """Setup message: uint8 adam_len + adam_id + uint8 uri_len + uri."""
+        data = pack_decrypt_setup("268443092", "skd://itunes.apple.com/key123/c23")
+        adam_id = b"268443092"
+        uri = b"skd://itunes.apple.com/key123/c23"
+        assert data[0:1] == struct.pack("B", len(adam_id))
+        assert data[1:1 + len(adam_id)] == adam_id
+        offset = 1 + len(adam_id)
+        assert data[offset:offset + 1] == struct.pack("B", len(uri))
+        assert data[offset + 1:] == uri
+
+    def test_pack_sample(self):
+        """Sample message: uint32 big-endian size + raw bytes."""
+        sample = b"\x00\x01\x02\x03" * 100
+        data = pack_sample(sample)
+        size = struct.unpack(">I", data[:4])[0]
+        assert size == len(sample)
+        assert data[4:] == sample
+
+    def test_pack_sample_zero_terminates(self):
+        """Sending empty bytes should produce a zero-length terminator."""
+        data = pack_sample(b"")
+        assert data == struct.pack(">I", 0)
+
+    def test_readfull_reads_exact_bytes(self):
+        """readfull should read exactly n bytes from a stream."""
+        stream = io.BytesIO(b"hello world")
+        result = readfull(stream, 5)
+        assert result == b"hello"
+
+    def test_readfull_raises_on_short_read(self):
+        """readfull should raise if stream ends before n bytes."""
+        stream = io.BytesIO(b"hi")
+        with pytest.raises(RuntimeError):
+            readfull(stream, 10)
+
+    def test_setup_handles_long_adam_id(self):
+        """Adam IDs up to 255 chars should work (uint8 length)."""
+        adam_id = "1" * 200
+        uri = "skd://x"
+        data = pack_decrypt_setup(adam_id, uri)
+        assert data[0] == 200
+        assert data[1:201] == adam_id.encode()
+
+    def test_pack_sample_large(self):
+        """Large samples (e.g. 64KB) should pack correctly."""
+        sample = b"\xff" * 65536
+        data = pack_sample(sample)
+        size = struct.unpack(">I", data[:4])[0]
+        assert size == 65536
+        assert len(data) == 4 + 65536
