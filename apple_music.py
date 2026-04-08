@@ -2,6 +2,7 @@
 
 import re
 import sys
+import time
 
 import requests
 
@@ -28,14 +29,40 @@ def fetch_dev_token() -> str:
 
 
 class AppleMusicClient:
+    MIN_REQUEST_GAP = 0.3  # seconds between requests
+    MAX_RETRIES = 4        # retry attempts on 429
+
     def __init__(self, dev_token: str, user_token: str, storefront: str = "za"):
         self.storefront = storefront
+        self._last_request_time = 0.0
         self.session = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {dev_token}",
             "Music-User-Token": user_token,
             "Origin": "https://music.apple.com",
         })
+
+    def _throttle(self) -> None:
+        elapsed = time.monotonic() - self._last_request_time
+        if elapsed < self.MIN_REQUEST_GAP:
+            time.sleep(self.MIN_REQUEST_GAP - elapsed)
+        self._last_request_time = time.monotonic()
+
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        self._throttle()
+        resp = self.session.request(method, url, **kwargs)
+        if resp.status_code != 429:
+            return resp
+        for attempt in range(self.MAX_RETRIES):
+            retry_after = resp.headers.get("Retry-After")
+            wait = int(retry_after) if retry_after else 2 ** (attempt + 2)  # 4, 8, 16, 32s
+            print(f"  ⏳ Rate limited, retrying in {wait}s ({attempt + 1}/{self.MAX_RETRIES})", file=sys.stderr)
+            time.sleep(wait)
+            self._throttle()
+            resp = self.session.request(method, url, **kwargs)
+            if resp.status_code != 429:
+                return resp
+        return resp
 
     def _check_response(self, resp: requests.Response) -> None:
         if resp.status_code == 401 or resp.status_code == 403:
@@ -50,9 +77,35 @@ class AppleMusicClient:
         resp.raise_for_status()
 
     def search_song(self, query: str, limit: int = 3) -> list[dict]:
-        """Search catalog for a song. Returns top matches."""
-        resp = self.session.get(
-            f"{BASE_URL}/v1/catalog/{self.storefront}/search",
+        """Search catalog via iTunes Search API (primary) with Apple Music API fallback."""
+        country = self.storefront.upper()
+        resp = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": query, "media": "music", "entity": "song", "limit": limit, "country": country},
+        )
+        if resp.status_code == 429:
+            # Fall back to Apple Music API
+            return self._apple_music_search(query, limit)
+        resp.raise_for_status()
+        return [
+            {
+                "id": str(song["trackId"]),
+                "name": song["trackName"],
+                "artist": song["artistName"],
+                "album": song.get("collectionName", ""),
+                "duration_ms": song.get("trackTimeMillis"),
+                "release_date": song.get("releaseDate", "")[:10],
+                "genres": [song["primaryGenreName"]] if song.get("primaryGenreName") else [],
+                "audio_traits": [],
+                "isrc": "",
+            }
+            for song in resp.json().get("results", [])
+        ]
+
+    def _apple_music_search(self, query: str, limit: int) -> list[dict]:
+        """Fallback search via Apple Music API (authenticated, richer metadata)."""
+        resp = self._request(
+            "GET", f"{BASE_URL}/v1/catalog/{self.storefront}/search",
             params={"term": query, "types": "songs", "limit": limit},
         )
         self._check_response(resp)
@@ -75,8 +128,8 @@ class AppleMusicClient:
 
     def create_playlist(self, name: str, description: str = "") -> str:
         """Create a new library playlist. Returns playlist ID."""
-        resp = self.session.post(
-            f"{BASE_URL}/v1/me/library/playlists",
+        resp = self._request(
+            "POST", f"{BASE_URL}/v1/me/library/playlists",
             json={
                 "attributes": {"name": name, "description": description},
                 "relationships": {"tracks": {"data": []}},
@@ -87,8 +140,8 @@ class AppleMusicClient:
 
     def add_tracks(self, playlist_id: str, track_ids: list[str]) -> bool:
         """Add catalog tracks to a library playlist."""
-        resp = self.session.post(
-            f"{BASE_URL}/v1/me/library/playlists/{playlist_id}/tracks",
+        resp = self._request(
+            "POST", f"{BASE_URL}/v1/me/library/playlists/{playlist_id}/tracks",
             json={"data": [{"id": tid, "type": "songs"} for tid in track_ids]},
         )
         self._check_response(resp)
@@ -99,7 +152,7 @@ class AppleMusicClient:
         playlists = []
         url = f"{BASE_URL}/v1/me/library/playlists"
         while url:
-            resp = self.session.get(url)
+            resp = self._request("GET", url)
             self._check_response(resp)
             data = resp.json()
             for p in data["data"]:
@@ -121,7 +174,7 @@ class AppleMusicClient:
         tracks = []
         url = f"{BASE_URL}/v1/me/library/playlists/{playlist_id}/tracks"
         while url:
-            resp = self.session.get(url)
+            resp = self._request("GET", url)
             self._check_response(resp)
             data = resp.json()
             for t in data.get("data", []):
@@ -140,8 +193,8 @@ class AppleMusicClient:
     def remove_tracks(self, playlist_id: str, track_ids: list[str]) -> bool:
         """Remove tracks from a library playlist by library-song ID."""
         for tid in track_ids:
-            resp = self.session.delete(
-                f"{BASE_URL}/v1/me/library/playlists/{playlist_id}/tracks",
+            resp = self._request(
+                "DELETE", f"{BASE_URL}/v1/me/library/playlists/{playlist_id}/tracks",
                 params={"ids[library-songs]": tid, "mode": "all"},
             )
             self._check_response(resp)
@@ -156,7 +209,7 @@ class AppleMusicClient:
         The old remove-all approach destroyed playlists — this is safe.
         """
         # Get current metadata
-        resp = self.session.get(f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
+        resp = self._request("GET", f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
         self._check_response(resp)
         current = resp.json()["data"][0]["attributes"]
         name = current.get("name", "")
@@ -170,7 +223,7 @@ class AppleMusicClient:
             self.add_tracks(new_id, track_ids)
 
         # Delete old playlist
-        resp = self.session.delete(f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
+        resp = self._request("DELETE", f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
         self._check_response(resp)
 
         return new_id
@@ -180,15 +233,15 @@ class AppleMusicClient:
         if name is None and description is None:
             return True
         # PUT requires both fields — fetch current values for any we're not changing
-        resp = self.session.get(f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
+        resp = self._request("GET", f"{BASE_URL}/v1/me/library/playlists/{playlist_id}")
         self._check_response(resp)
         current = resp.json()["data"][0]["attributes"]
         attrs = {
             "name": name if name is not None else current.get("name", ""),
             "description": description if description is not None else current.get("description", {}).get("standard", ""),
         }
-        resp = self.session.put(
-            f"{BASE_URL}/v1/me/library/playlists/{playlist_id}",
+        resp = self._request(
+            "PUT", f"{BASE_URL}/v1/me/library/playlists/{playlist_id}",
             json={"attributes": attrs},
         )
         self._check_response(resp)

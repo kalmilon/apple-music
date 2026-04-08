@@ -12,19 +12,44 @@ Usage:
     python cli.py remove --id p.ABC123 --track-ids '["i.XXX", "i.YYY"]'
     python cli.py rename --id p.ABC123 --name "New Name" --description "New desc"
     python cli.py reorder --id p.ABC123 --track-ids '["123", "456", "789"]'
+    python cli.py yt-search --query "persona 5 cafe music"
+    python cli.py yt-download --url "https://youtube.com/watch?v=..." --name "Cafe Leblanc"
 """
 
 import argparse
 import json
+import hashlib
 import re
+import subprocess
 import sys
 import os
+from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from apple_music import AppleMusicClient, TokenExpiredError, fetch_dev_token
+
+CACHE_DIR = Path(__file__).parent / ".search_cache"
+DOWNLOAD_DIR = Path.home() / "Music" / "YouTube Downloads"
+
+
+def _cache_key(query: str, limit: int) -> str:
+    return hashlib.sha256(f"{query}|{limit}".encode()).hexdigest()[:16]
+
+
+def cached_search(am: AppleMusicClient, query: str, limit: int = 10) -> list[dict]:
+    """Search with file-based cache. Avoids repeat API calls for the same query."""
+    CACHE_DIR.mkdir(exist_ok=True)
+    key = _cache_key(query, limit)
+    cache_file = CACHE_DIR / f"{key}.json"
+    if cache_file.exists():
+        return json.loads(cache_file.read_text())
+    results = am.search_song(query, limit=limit)
+    cache_file.write_text(json.dumps(results))
+    return results
 
 
 def get_client() -> AppleMusicClient:
@@ -120,7 +145,7 @@ def match_songs(am: AppleMusicClient, songs: list[dict]) -> list[dict]:
     results = []
     for song in songs:
         query = f"{song['artist']} {song['title']}"
-        candidates = am.search_song(query, limit=10)
+        candidates = cached_search(am, query, limit=10)
         if not candidates:
             results.append({
                 "request": song,
@@ -273,6 +298,134 @@ def cmd_reorder(args):
     print(f"Reordered playlist. New ID: {new_id}")
 
 
+def _sanitize_filename(name: str) -> str:
+    """Remove characters that cause problems in filenames and AppleScript."""
+    # Replace fullwidth and other problematic unicode with ASCII equivalents
+    replacements = {
+        "\uff5c": "-", "\uff1a": "-", "\uff0f": "-",  # fullwidth |, :, /
+        "|": "-", ":": "-", "/": "-", "\\": "-",
+        '"': "'", "?": "", "*": "", "<": "", ">": "",
+    }
+    for old, new in replacements.items():
+        name = name.replace(old, new)
+    return name.strip()
+
+
+def cmd_yt_search(args):
+    """Search YouTube and display results with clickable links."""
+    limit = args.limit
+    query = f"ytsearch{limit}:{args.query}"
+    result = subprocess.run(
+        ["yt-dlp", "--flat-playlist", "-J", query],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"yt-dlp error: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    data = json.loads(result.stdout)
+    entries = data.get("entries", [])
+    if not entries:
+        print("No results.")
+        return
+
+    for i, e in enumerate(entries, 1):
+        dur = int(e.get("duration") or 0)
+        hrs, remainder = divmod(dur, 3600)
+        mins, secs = divmod(remainder, 60)
+        dur_str = f"{hrs}:{mins:02d}:{secs:02d}" if hrs else f"{mins}:{secs:02d}"
+        url = f"https://youtube.com/watch?v={e['id']}"
+        print(f"  {i}. [{dur_str}] {e['title']}")
+        print(f"     {url}")
+
+
+def _tag_m4a(path: Path, title: str, artist: str | None, album: str | None, thumbnail_url: str | None):
+    """Write metadata tags and artwork to an m4a file."""
+    from mutagen.mp4 import MP4, MP4Cover
+
+    audio = MP4(str(path))
+    audio["\xa9nam"] = [title]
+    if artist:
+        audio["\xa9ART"] = [artist]
+    if album:
+        audio["\xa9alb"] = [album]
+
+    # Embed thumbnail as cover art
+    if thumbnail_url:
+        try:
+            resp = requests.get(thumbnail_url, timeout=15)
+            resp.raise_for_status()
+            fmt = MP4Cover.FORMAT_PNG if thumbnail_url.endswith(".png") else MP4Cover.FORMAT_JPEG
+            audio["covr"] = [MP4Cover(resp.content, imageformat=fmt)]
+        except Exception as e:
+            print(f"  (artwork fetch failed: {e})")
+
+    audio.save()
+
+
+def cmd_yt_download(args):
+    """Download audio from YouTube and import into Music.app."""
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Fetch video metadata (title, uploader, thumbnail)
+    probe = subprocess.run(
+        ["yt-dlp", "-J", "--no-download", args.url],
+        capture_output=True, text=True,
+    )
+    if probe.returncode != 0:
+        print(f"Failed to fetch video info: {probe.stderr}", file=sys.stderr)
+        sys.exit(1)
+    meta = json.loads(probe.stdout)
+
+    title = args.name or meta.get("title", "Unknown")
+    artist = args.artist or meta.get("uploader") or meta.get("channel")
+    album = args.album or "YouTube"
+    thumbnail_url = meta.get("thumbnail")
+
+    filename = _sanitize_filename(title)
+    output_path = DOWNLOAD_DIR / f"{filename}.m4a"
+
+    # Download
+    print(f"Downloading: {title}")
+    dl = subprocess.run(
+        [
+            "yt-dlp", "-x", "--audio-format", "m4a", "--audio-quality", "0",
+            "-o", str(output_path), args.url,
+        ],
+    )
+    if dl.returncode != 0:
+        print("Download failed.", file=sys.stderr)
+        sys.exit(1)
+
+    if not output_path.exists():
+        print(f"Expected file not found: {output_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Tag metadata
+    print(f"Tagging: {title} — {artist} ({album})")
+    _tag_m4a(output_path, title, artist, album, thumbnail_url)
+
+    print(f"Saved: {output_path}")
+
+    # Import into Music.app
+    if not args.no_import:
+        print("Importing into Music.app ...")
+        import_result = subprocess.run(
+            [
+                "osascript", "-e",
+                f'tell application "Music" to add POSIX file "{output_path}"',
+            ],
+            capture_output=True, text=True,
+        )
+        if import_result.returncode != 0:
+            print(f"Music.app import failed: {import_result.stderr}", file=sys.stderr)
+            print("File is saved — you can drag it into Music.app manually.")
+            sys.exit(1)
+        print(f"Imported into Music.app: {title} — {artist}")
+    else:
+        print("Skipped Music.app import (--no-import).")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Apple Music playlist CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -321,6 +474,19 @@ def main():
     p_reorder.add_argument("--id", required=True, help="Playlist ID")
     p_reorder.add_argument("--track-ids", required=True, help="JSON array of catalog song IDs in desired order")
 
+    # yt-search
+    p_yts = sub.add_parser("yt-search", help="Search YouTube for audio")
+    p_yts.add_argument("--query", required=True, help="YouTube search query")
+    p_yts.add_argument("--limit", type=int, default=5, help="Number of results")
+
+    # yt-download
+    p_ytd = sub.add_parser("yt-download", help="Download from YouTube and import into Music.app")
+    p_ytd.add_argument("--url", required=True, help="YouTube video URL")
+    p_ytd.add_argument("--name", help="Custom title/filename (default: video title)")
+    p_ytd.add_argument("--artist", help="Artist tag (default: YouTube uploader)")
+    p_ytd.add_argument("--album", help="Album tag (default: 'YouTube')")
+    p_ytd.add_argument("--no-import", action="store_true", help="Download only, skip Music.app import")
+
     args = parser.parse_args()
 
     try:
@@ -328,10 +494,16 @@ def main():
             "match": cmd_match, "search": cmd_search, "create": cmd_create,
             "list": cmd_list, "tracks": cmd_tracks, "add": cmd_add,
             "remove": cmd_remove, "rename": cmd_rename, "reorder": cmd_reorder,
+            "yt-search": cmd_yt_search, "yt-download": cmd_yt_download,
         }[args.command](args)
     except TokenExpiredError as e:
         print(f"\n{e}", file=sys.stderr)
         sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 429:
+            print("\n✗ Rate limited — retries exhausted. Wait 5-10 minutes and try again.", file=sys.stderr)
+            sys.exit(2)
+        raise
 
 
 if __name__ == "__main__":
